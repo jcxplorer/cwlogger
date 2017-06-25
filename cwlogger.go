@@ -14,6 +14,9 @@ import (
 	"github.com/aws/aws-sdk-go/service/cloudwatchlogs"
 )
 
+// A LogGroup represents an Amazon CloudWatch Logs log group.
+//
+// Log streams are managed automatically based on log throughput.
 type LogGroup struct {
 	ErrorReporter func(err error)
 
@@ -26,6 +29,10 @@ type LogGroup struct {
 	done    chan bool
 }
 
+// NewLogGroup creates the log group if it doesn't yet exist, and one initial
+// log stream for writing logs into.
+//
+// Returns an error if the creation of the log group or log stream fail.
 func NewLogGroup(name string, client *cloudwatchlogs.CloudWatchLogs) (*LogGroup, error) {
 	lg := &LogGroup{
 		ErrorReporter: noopErrorReporter,
@@ -50,6 +57,13 @@ func NewLogGroup(name string, client *cloudwatchlogs.CloudWatchLogs) (*LogGroup,
 	return lg, nil
 }
 
+// Log enqueues a log message to be written to a log stream.
+//
+// The log message must be less than 1,048,550 bytes, and the time must not be
+// more than 2 hours in the future, 14 days in the past, or older than the
+// retention period of the log group.
+//
+// This method is safe for concurrent access by multiple goroutines.
 func (lg *LogGroup) Log(t time.Time, s string) {
 	lg.wg.Add(1)
 	go func() {
@@ -61,6 +75,12 @@ func (lg *LogGroup) Log(t time.Time, s string) {
 	}()
 }
 
+// Close drains all enqueued log messages and writes them to CloudWatch Logs.
+// This method blocks until all pending log messages are written.
+//
+// The LogGroup is not meant to be used anymore after this method is called.
+// Doing so will result in a panic. Create a new LogGroup if you wish to write
+// more logs.
 func (lg *LogGroup) Close() {
 	lg.wg.Wait()       // wait for all log entries to be accepted
 	lg.batcher.flush() // wait for all log entries to be batched

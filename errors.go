@@ -17,6 +17,9 @@ var retryableErrorCodes = map[string]struct{}{
 	errCodeServiceUnavailableException:   {},
 }
 
+// Error contains the AWS error code and message that caused the PutLogEvents
+// action to fail. Errors reported by the LogGroup ErrorReporter function may
+// be converted into this type.
 type Error struct {
 	Code    string
 	Message string
