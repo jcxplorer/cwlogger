@@ -73,8 +73,8 @@ func (br *batcher) worker() {
 			sort.Sort(b)
 			br.output <- b.logEvents
 			b = newBatch()
-			timeout = time.After(time.Second)
 		}
+		timeout = time.After(time.Second)
 	}
 
 	for {
