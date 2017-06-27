@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"sync"
@@ -14,30 +15,58 @@ import (
 	"github.com/aws/aws-sdk-go/service/cloudwatchlogs"
 )
 
-// A LogGroup represents an Amazon CloudWatch Logs log group.
-//
-// Log streams are managed automatically based on log throughput.
-type LogGroup struct {
-	ErrorReporter func(err error)
+// The Config for the Logger.
+type Config struct {
+	// The Amazon CloudWatch Logs client created with the AWS SDK for Go.
+	// Required.
+	Client *cloudwatchlogs.CloudWatchLogs
 
-	name    *string
-	svc     *cloudwatchlogs.CloudWatchLogs
-	streams *logStreams
-	prefix  string
-	batcher *batcher
-	wg      sync.WaitGroup
-	done    chan bool
+	// The name of the log group to write logs into. Required.
+	LogGroupName string
+
+	// An optional function to report errors that couldn't be automatically
+	// handled during a PutLogEvents API call and caused a log events to be
+	// dropped.
+	ErrorReporter func(err error)
 }
 
-// NewLogGroup creates the log group if it doesn't yet exist, and one initial
-// log stream for writing logs into.
+// A Logger represents a single CloudWatch Logs log group.
+type Logger struct {
+	name          *string
+	svc           *cloudwatchlogs.CloudWatchLogs
+	streams       *logStreams
+	prefix        string
+	batcher       *batcher
+	wg            sync.WaitGroup
+	done          chan bool
+	errorReporter func(err error)
+}
+
+// New creates a new Logger.
 //
-// Returns an error if the creation of the log group or log stream fail.
-func NewLogGroup(name string, client *cloudwatchlogs.CloudWatchLogs) (*LogGroup, error) {
-	lg := &LogGroup{
-		ErrorReporter: noopErrorReporter,
-		name:          &name,
-		svc:           client,
+// Creates the log group if it doesn't yet exist, and one initial log stream for
+// writing logs into.
+//
+// Returns an error if the configuration is invalid, or if either the creation
+// of the log group or log stream fail.
+func New(config *Config) (*Logger, error) {
+	if config.Client == nil {
+		return nil, errors.New("cwlogger: config missing required Client")
+	}
+
+	if config.LogGroupName == "" {
+		return nil, errors.New("cwlogger: config missing required LogGroupName")
+	}
+
+	errorReporter := noopErrorReporter
+	if config.ErrorReporter != nil {
+		errorReporter = config.ErrorReporter
+	}
+
+	lg := &Logger{
+		errorReporter: errorReporter,
+		name:          &config.LogGroupName,
+		svc:           config.Client,
 		prefix:        randomHex(32),
 		batcher:       newBatcher(),
 		done:          make(chan bool),
@@ -64,7 +93,7 @@ func NewLogGroup(name string, client *cloudwatchlogs.CloudWatchLogs) (*LogGroup,
 // retention period of the log group.
 //
 // This method is safe for concurrent access by multiple goroutines.
-func (lg *LogGroup) Log(t time.Time, s string) {
+func (lg *Logger) Log(t time.Time, s string) {
 	lg.wg.Add(1)
 	go func() {
 		lg.batcher.input <- &cloudwatchlogs.InputLogEvent{
@@ -78,24 +107,24 @@ func (lg *LogGroup) Log(t time.Time, s string) {
 // Close drains all enqueued log messages and writes them to CloudWatch Logs.
 // This method blocks until all pending log messages are written.
 //
-// The LogGroup is not meant to be used anymore after this method is called.
-// Doing so will result in a panic. Create a new LogGroup if you wish to write
+// The Logger is not meant to be used anymore after this method is called.
+// Doing so will result in a panic. Create a new Logger if you wish to write
 // more logs.
-func (lg *LogGroup) Close() {
+func (lg *Logger) Close() {
 	lg.wg.Wait()       // wait for all log entries to be accepted
 	lg.batcher.flush() // wait for all log entries to be batched
 	<-lg.done          // wait for all batches to be processed
 	lg.streams.flush() // wait for all batches to be sent to CloudWatch Logs
 }
 
-func (lg *LogGroup) worker() {
+func (lg *Logger) worker() {
 	for batch := range lg.batcher.output {
 		lg.streams.write(batch)
 	}
 	lg.done <- true
 }
 
-func (lg *LogGroup) createIfNotExists() error {
+func (lg *Logger) createIfNotExists() error {
 	_, err := lg.svc.CreateLogGroup(&cloudwatchlogs.CreateLogGroupInput{
 		LogGroupName: lg.name,
 	})
@@ -116,31 +145,31 @@ type writeError struct {
 }
 
 type logStreams struct {
-	logGroup *LogGroup
-	streams  []*logStream
-	writers  map[*logStream]chan []*cloudwatchlogs.InputLogEvent
-	writes   chan []*cloudwatchlogs.InputLogEvent
-	errors   chan *writeError
-	wg       sync.WaitGroup
+	logger  *Logger
+	streams []*logStream
+	writers map[*logStream]chan []*cloudwatchlogs.InputLogEvent
+	writes  chan []*cloudwatchlogs.InputLogEvent
+	errors  chan *writeError
+	wg      sync.WaitGroup
 }
 
-func newLogStreams(lg *LogGroup) *logStreams {
+func newLogStreams(lg *Logger) *logStreams {
 	streams := &logStreams{
-		logGroup: lg,
-		streams:  []*logStream{},
-		writers:  make(map[*logStream]chan []*cloudwatchlogs.InputLogEvent),
-		writes:   make(chan []*cloudwatchlogs.InputLogEvent),
-		errors:   make(chan *writeError),
+		logger:  lg,
+		streams: []*logStream{},
+		writers: make(map[*logStream]chan []*cloudwatchlogs.InputLogEvent),
+		writes:  make(chan []*cloudwatchlogs.InputLogEvent),
+		errors:  make(chan *writeError),
 	}
 	go streams.coordinator()
 	return streams
 }
 
 func (ls *logStreams) new() error {
-	name := ls.logGroup.prefix + "." + strconv.Itoa(len(ls.streams))
+	name := ls.logger.prefix + "." + strconv.Itoa(len(ls.streams))
 	stream := &logStream{
-		name:     &name,
-		logGroup: ls.logGroup,
+		name:   &name,
+		logger: ls.logger,
 	}
 
 	err := stream.create()
@@ -204,7 +233,7 @@ func (ls *logStreams) handle(writeErr *writeError) {
 		}()
 	} else {
 		ls.wg.Done()
-		ls.logGroup.ErrorReporter(writeErr.err)
+		ls.logger.errorReporter(writeErr.err)
 	}
 }
 
@@ -214,28 +243,28 @@ func (ls *logStreams) flush() {
 
 type logStream struct {
 	name          *string
-	logGroup      *LogGroup
+	logger        *Logger
 	sequenceToken *string
 }
 
 func (ls *logStream) create() error {
-	_, err := ls.logGroup.svc.CreateLogStream(&cloudwatchlogs.CreateLogStreamInput{
-		LogGroupName:  ls.logGroup.name,
+	_, err := ls.logger.svc.CreateLogStream(&cloudwatchlogs.CreateLogStreamInput{
+		LogGroupName:  ls.logger.name,
 		LogStreamName: ls.name,
 	})
 	return err
 }
 
 func (ls *logStream) write(b []*cloudwatchlogs.InputLogEvent) error {
-	req, _ := ls.logGroup.svc.PutLogEventsRequest(&cloudwatchlogs.PutLogEventsInput{
-		LogGroupName:  ls.logGroup.name,
+	req, _ := ls.logger.svc.PutLogEventsRequest(&cloudwatchlogs.PutLogEventsInput{
+		LogGroupName:  ls.logger.name,
 		LogStreamName: ls.name,
 		LogEvents:     b,
 		SequenceToken: ls.sequenceToken,
 	})
 
 	req.Sign()
-	resp, err := ls.logGroup.svc.Client.Config.HTTPClient.Do(req.HTTPRequest)
+	resp, err := ls.logger.svc.Client.Config.HTTPClient.Do(req.HTTPRequest)
 
 	if err != nil {
 		return err

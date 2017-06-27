@@ -25,11 +25,15 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+var defaultConfig = &Config{
+	LogGroupName: "test",
+}
+
 func TestCreatesGroupAndStream(t *testing.T) {
 	logGroupCreated := false
 	logStreamCreated := false
 
-	newLogGroupWithServer("test", func(w http.ResponseWriter, r *http.Request) {
+	newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
 		if action(r) == "CreateLogGroup" {
 			var data CreateLogGroup
 			parseBody(r, &data)
@@ -55,7 +59,7 @@ func TestCreatesGroupAndStream(t *testing.T) {
 func TestHandlesExistingGroup(t *testing.T) {
 	logStreamCreated := false
 
-	newLogGroupWithServer("test", func(w http.ResponseWriter, r *http.Request) {
+	newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
 		if action(r) == "CreateLogGroup" {
 			w.WriteHeader(http.StatusBadRequest)
 			w.Write([]byte(`
@@ -78,7 +82,7 @@ func TestSendsLogsToCloudWatchLogs(t *testing.T) {
 	var logStreamName string
 	var req PutLogEvents
 
-	logger := newLogGroupWithServer("test", func(w http.ResponseWriter, r *http.Request) {
+	logger := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
 		if action(r) == "CreateLogStream" {
 			var data CreateLogStream
 			parseBody(r, &data)
@@ -105,7 +109,7 @@ func TestSequenceToken(t *testing.T) {
 	logChecker := NewLogChecker(1024)
 	receivedSequenceTokens := []*string{}
 
-	logger := newLogGroupWithServer("test", func(w http.ResponseWriter, r *http.Request) {
+	logger := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
 		if action(r) == "PutLogEvents" {
 			var data PutLogEvents
 			parseBody(r, &data)
@@ -130,7 +134,7 @@ func TestDataAlreadyAcceptedException(t *testing.T) {
 		logChecker            = NewLogChecker(1024)
 	)
 
-	logger := newLogGroupWithServer("test", func(w http.ResponseWriter, r *http.Request) {
+	logger := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
 		if action(r) == "PutLogEvents" {
 			calls++
 			if calls == 1 {
@@ -163,7 +167,7 @@ func TestInvalidSequenceTokenException(t *testing.T) {
 		receivedSequenceToken string
 	)
 
-	logger := newLogGroupWithServer("test", func(w http.ResponseWriter, r *http.Request) {
+	logger := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
 		if action(r) == "PutLogEvents" {
 			calls++
 			if calls == 1 {
@@ -196,7 +200,7 @@ func TestThrottlingException(t *testing.T) {
 	actions := []string{}
 	var calls int
 
-	logger := newLogGroupWithServer("test", func(w http.ResponseWriter, r *http.Request) {
+	logger := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
 		actions = append(actions, action(r))
 		if action(r) == "PutLogEvents" {
 			calls++
@@ -230,7 +234,7 @@ func TestConnectionFailure(t *testing.T) {
 	logChecker := NewLogChecker(1024)
 	var calls int
 
-	logger := newLogGroupWithServer("test", func(w http.ResponseWriter, r *http.Request) {
+	logger := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
 		if action(r) == "PutLogEvents" {
 			calls++
 			if calls == 1 {
@@ -258,7 +262,7 @@ func TestLogStreamCreationFailureAfterThrottlingException(t *testing.T) {
 	actions := []string{}
 	var calls int
 
-	logger := newLogGroupWithServer("test", func(w http.ResponseWriter, r *http.Request) {
+	logger := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
 		actions = append(actions, action(r))
 		calls++
 		if action(r) == "CreateLogStream" && calls == 4 {
@@ -295,7 +299,7 @@ func TestInvalidJSONResponses(t *testing.T) {
 	logChecker := NewLogChecker(1024)
 	var calls int
 
-	logger := newLogGroupWithServer("test", func(w http.ResponseWriter, r *http.Request) {
+	logger := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
 		if action(r) == "PutLogEvents" {
 			calls++
 			if calls == 1 {
@@ -323,7 +327,7 @@ func TestBatchByteSizeLimit(t *testing.T) {
 	stg := new(SequenceTokenGenerator)
 	logChecker := NewLogChecker(1024)
 
-	logger := newLogGroupWithServer("test", func(w http.ResponseWriter, r *http.Request) {
+	logger := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
 		if action(r) == "PutLogEvents" {
 			var data PutLogEvents
 			parseBody(r, &data)
@@ -343,7 +347,7 @@ func TestBatchLengthLimit(t *testing.T) {
 	stg := new(SequenceTokenGenerator)
 	logChecker := NewLogChecker(55)
 
-	logger := newLogGroupWithServer("test", func(w http.ResponseWriter, r *http.Request) {
+	logger := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
 		if action(r) == "PutLogEvents" {
 			var data PutLogEvents
 			parseBody(r, &data)
@@ -364,7 +368,7 @@ func TestBatchSendsDataAfterTimeout(t *testing.T) {
 	logChecker := NewLogChecker(1024)
 	var wg sync.WaitGroup
 
-	logger := newLogGroupWithServer("test", func(w http.ResponseWriter, r *http.Request) {
+	logger := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
 		if action(r) == "PutLogEvents" {
 			var data PutLogEvents
 			parseBody(r, &data)
@@ -388,7 +392,10 @@ func TestLogGroupCreationFails(t *testing.T) {
 			w.Write([]byte(`{"__type": "ServiceUnavailableException"}`))
 		}
 	})
-	logger, err := NewLogGroup("test", client)
+	logger, err := New(&Config{
+		Client:       client,
+		LogGroupName: "test",
+	})
 	assert.Error(t, err)
 	assert.Nil(t, logger)
 }
@@ -400,7 +407,10 @@ func TestLogStreamCreationFails(t *testing.T) {
 			w.Write([]byte(`{"__type": "ServiceUnavailableException"}`))
 		}
 	})
-	logger, err := NewLogGroup("test", client)
+	logger, err := New(&Config{
+		Client:       client,
+		LogGroupName: "test",
+	})
 	assert.Error(t, err)
 	assert.Nil(t, logger)
 }
@@ -408,7 +418,7 @@ func TestLogStreamCreationFails(t *testing.T) {
 func TestIgnoresBatchItCannotRetry(t *testing.T) {
 	var calls int
 
-	logger := newLogGroupWithServer("test", func(w http.ResponseWriter, r *http.Request) {
+	logger := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
 		if action(r) == "PutLogEvents" {
 			calls++
 			w.WriteHeader(http.StatusBadRequest)
@@ -426,8 +436,14 @@ func TestCustomErrorReporter(t *testing.T) {
 	var calls int
 	var errorMessages []string
 	logChecker := NewLogChecker(1024)
+	config := &Config{
+		LogGroupName: "test",
+		ErrorReporter: func(err error) {
+			errorMessages = append(errorMessages, err.Error())
+		},
+	}
 
-	logger := newLogGroupWithServer("test", func(w http.ResponseWriter, r *http.Request) {
+	logger := newLoggerWithServer(config, func(w http.ResponseWriter, r *http.Request) {
 		if action(r) == "PutLogEvents" {
 			calls++
 			w.WriteHeader(http.StatusBadRequest)
@@ -444,15 +460,27 @@ func TestCustomErrorReporter(t *testing.T) {
 		}
 	})
 
-	logger.ErrorReporter = func(err error) {
-		errorMessages = append(errorMessages, err.Error())
-	}
-
 	logChecker.Generate(logger, 2000)
 	logger.Close()
 
 	assert.Equal(t, "ResourceNotFoundException", errorMessages[0])
 	assert.Equal(t, "UnknownError: unknown", errorMessages[1])
+}
+
+func TestConfigWithoutClient(t *testing.T) {
+	logger, err := New(&Config{
+		LogGroupName: "test",
+	})
+	assert.Nil(t, logger)
+	assert.EqualError(t, err, "cwlogger: config missing required Client")
+}
+
+func TestConfigWithoutLogGroupName(t *testing.T) {
+	logger, err := New(&Config{
+		Client: cloudwatchlogs.New(session.New()),
+	})
+	assert.Nil(t, logger)
+	assert.EqualError(t, err, "cwlogger: config missing required LogGroupName")
 }
 
 type CreateLogGroup struct {
@@ -487,9 +515,13 @@ func newClientWithServer(handler http.HandlerFunc) *cloudwatchlogs.CloudWatchLog
 	return cloudwatchlogs.New(session, config)
 }
 
-func newLogGroupWithServer(name string, handler http.HandlerFunc) *LogGroup {
-	client := newClientWithServer(handler)
-	logGroup, err := NewLogGroup(name, client)
+func newLoggerWithServer(config *Config, handler http.HandlerFunc) *Logger {
+	cfg := new(Config)
+	*cfg = *config
+	if cfg.Client == nil {
+		cfg.Client = newClientWithServer(handler)
+	}
+	logGroup, err := New(cfg)
 	if err != nil {
 		panic(err)
 	}
@@ -570,7 +602,7 @@ func NewLogChecker(messageSize int) *LogChecker {
 	}
 }
 
-func (c *LogChecker) Generate(lg *LogGroup, count int) {
+func (c *LogChecker) Generate(lg *Logger, count int) {
 	for i := 0; i < count; i++ {
 		c.id++
 		message := &TestLogMessage{
