@@ -28,7 +28,7 @@
 // Use the AWS SDK for Go to configure and create the client.
 //
 //   logger, err := cwlogger.New(&cwlogger.Config{
-//	   LogGroupName: "groupName",
+//     LogGroupName: "groupName",
 //     Client: cloudwatchlogs.New(session.New())
 //   })
 //   // handle err
