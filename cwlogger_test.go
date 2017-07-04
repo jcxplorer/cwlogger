@@ -56,10 +56,43 @@ func TestCreatesGroupAndStream(t *testing.T) {
 	assert.True(t, logStreamCreated)
 }
 
+func TestCreatesRetentionPolicy(t *testing.T) {
+	logGroupCreated := false
+	retentionPolicyCreated := false
+	config := &Config{
+		LogGroupName: "test",
+		Retention:    90,
+	}
+
+	newLoggerWithServer(config, func(w http.ResponseWriter, r *http.Request) {
+		if action(r) == "CreateLogGroup" {
+			logGroupCreated = true
+		}
+		if action(r) == "PutRetentionPolicy" {
+			if !logGroupCreated {
+				assert.Fail(t, "CreateLogGroup must be called before PutRetentionPolicy")
+				var data PutRetentionPolicy
+				parseBody(r, &data)
+				assert.Equal(t, "test", data.LogGroupName)
+				assert.Equal(t, 90, data.RetentionInDays)
+			}
+			retentionPolicyCreated = true
+		}
+	})
+
+	assert.True(t, logGroupCreated)
+	assert.True(t, retentionPolicyCreated)
+}
+
 func TestHandlesExistingGroup(t *testing.T) {
 	logStreamCreated := false
+	retentionPolicyCreated := false
+	config := &Config{
+		LogGroupName: "test",
+		Retention:    30,
+	}
 
-	newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
+	newLoggerWithServer(config, func(w http.ResponseWriter, r *http.Request) {
 		if action(r) == "CreateLogGroup" {
 			w.WriteHeader(http.StatusBadRequest)
 			w.Write([]byte(`
@@ -72,9 +105,13 @@ func TestHandlesExistingGroup(t *testing.T) {
 		if action(r) == "CreateLogStream" {
 			logStreamCreated = true
 		}
+		if action(r) == "PutRetentionPolicy" {
+			retentionPolicyCreated = true
+		}
 	})
 
 	assert.True(t, logStreamCreated)
+	assert.False(t, retentionPolicyCreated)
 }
 
 func TestSendsLogsToCloudWatchLogs(t *testing.T) {
@@ -415,6 +452,22 @@ func TestLogStreamCreationFails(t *testing.T) {
 	assert.Nil(t, logger)
 }
 
+func TestPutRetentionPolicyFails(t *testing.T) {
+	client := newClientWithServer(func(w http.ResponseWriter, r *http.Request) {
+		if action(r) == "PutRetentionPolicy" {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"__type": "ServiceUnavailableException"}`))
+		}
+	})
+	logger, err := New(&Config{
+		Client:       client,
+		LogGroupName: "test",
+		Retention:    180,
+	})
+	assert.Error(t, err)
+	assert.Nil(t, logger)
+}
+
 func TestIgnoresBatchItCannotRetry(t *testing.T) {
 	var calls int
 
@@ -497,6 +550,11 @@ type PutLogEvents struct {
 	LogStreamName string      `json:"logStreamName"`
 	SequenceToken *string     `json:"sequenceToken"`
 	LogEvents     []*LogEvent `json:"logEvents"`
+}
+
+type PutRetentionPolicy struct {
+	LogGroupName    string `json:"logGroupName"`
+	RetentionInDays string `json:"retentionInDays"`
 }
 
 type LogEvent struct {

@@ -28,6 +28,12 @@ type Config struct {
 	// handled during a PutLogEvents API call and caused a log events to be
 	// dropped.
 	ErrorReporter func(err error)
+
+	// An optional log group retention time in days. This value is only taken into
+	// account when creating a log group that does not yet exist. Set to 0
+	// (default) for no retention policy. Refer to the PutRetentionPolicy API
+	// documentation for valid values.
+	Retention int
 }
 
 // A Logger represents a single CloudWatch Logs log group.
@@ -40,6 +46,7 @@ type Logger struct {
 	wg            sync.WaitGroup
 	done          chan bool
 	errorReporter func(err error)
+	retention     int
 }
 
 // New creates a new Logger.
@@ -67,6 +74,7 @@ func New(config *Config) (*Logger, error) {
 		errorReporter: errorReporter,
 		name:          &config.LogGroupName,
 		svc:           config.Client,
+		retention:     config.Retention,
 		prefix:        randomHex(32),
 		batcher:       newBatcher(),
 		done:          make(chan bool),
@@ -134,6 +142,12 @@ func (lg *Logger) createIfNotExists() error {
 				return nil
 			}
 		}
+	}
+	if lg.retention != 0 {
+		_, err = lg.svc.PutRetentionPolicy(&cloudwatchlogs.PutRetentionPolicyInput{
+			LogGroupName:    lg.name,
+			RetentionInDays: aws.Int64(int64(lg.retention)),
+		})
 	}
 	return err
 }
