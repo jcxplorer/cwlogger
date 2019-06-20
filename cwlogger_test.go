@@ -18,10 +18,9 @@ import (
 
 	"sync"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/cloudwatchlogs"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/endpoints"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -530,7 +529,7 @@ func TestConfigWithoutClient(t *testing.T) {
 
 func TestConfigWithoutLogGroupName(t *testing.T) {
 	logger, err := New(&Config{
-		Client: cloudwatchlogs.New(session.New()),
+		Client: cloudwatchlogs.New(*aws.NewConfig()),
 	})
 	assert.Nil(t, logger)
 	assert.EqualError(t, err, "cwlogger: config missing required LogGroupName")
@@ -562,15 +561,19 @@ type LogEvent struct {
 	Message   string `json:"message"`
 }
 
-func newClientWithServer(handler http.HandlerFunc) *cloudwatchlogs.CloudWatchLogs {
+func newClientWithServer(handler http.HandlerFunc) *cloudwatchlogs.Client {
 	server := httptest.NewServer(http.HandlerFunc(handler))
-	session := session.New()
-	config := aws.NewConfig().
-		WithMaxRetries(0).
-		WithEndpoint(server.URL).
-		WithRegion("us-east-1").
-		WithCredentials(credentials.NewStaticCredentials("id", "secret", "token"))
-	return cloudwatchlogs.New(session, config)
+
+	cfg := aws.NewConfig()
+	cfg.Logger = aws.NewDefaultLogger()
+	cfg.LogLevel = aws.LogDebug
+	cfg.Region = endpoints.UsEast1RegionID
+	cfg.DisableEndpointHostPrefix = true
+	cfg.EndpointResolver = aws.ResolveWithEndpointURL(server.URL)
+	cfg.Retryer = aws.DefaultRetryer{NumMaxRetries: 0}
+	cfg.Credentials = aws.NewStaticCredentialsProvider("id", "secret", "token")
+
+	return cloudwatchlogs.New(*cfg)
 }
 
 func newLoggerWithServer(config *Config, handler http.HandlerFunc) *Logger {

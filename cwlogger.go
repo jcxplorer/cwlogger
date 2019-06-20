@@ -1,6 +1,7 @@
 package cwlogger
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -10,16 +11,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/awserr"
-	"github.com/aws/aws-sdk-go/service/cloudwatchlogs"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/awserr"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 )
 
 // The Config for the Logger.
 type Config struct {
 	// The Amazon CloudWatch Logs client created with the AWS SDK for Go.
 	// Required.
-	Client *cloudwatchlogs.CloudWatchLogs
+	Client *cloudwatchlogs.Client
 
 	// The name of the log group to write logs into. Required.
 	LogGroupName string
@@ -39,7 +40,7 @@ type Config struct {
 // A Logger represents a single CloudWatch Logs log group.
 type Logger struct {
 	name          *string
-	svc           *cloudwatchlogs.CloudWatchLogs
+	svc           *cloudwatchlogs.Client
 	streams       *logStreams
 	prefix        string
 	batcher       *batcher
@@ -104,7 +105,7 @@ func New(config *Config) (*Logger, error) {
 func (lg *Logger) Log(t time.Time, s string) {
 	lg.wg.Add(1)
 	go func() {
-		lg.batcher.input <- &cloudwatchlogs.InputLogEvent{
+		lg.batcher.input <- cloudwatchlogs.InputLogEvent{
 			Message:   &s,
 			Timestamp: aws.Int64(t.UnixNano() / int64(time.Millisecond)),
 		}
@@ -133,9 +134,13 @@ func (lg *Logger) worker() {
 }
 
 func (lg *Logger) createIfNotExists() error {
-	_, err := lg.svc.CreateLogGroup(&cloudwatchlogs.CreateLogGroupInput{
+	ctx := context.TODO()
+
+	req := lg.svc.CreateLogGroupRequest(&cloudwatchlogs.CreateLogGroupInput{
 		LogGroupName: lg.name,
 	})
+
+	_, err := req.Send(ctx)
 	if err != nil {
 		if awsErr, ok := err.(awserr.Error); ok {
 			if awsErr.Code() == cloudwatchlogs.ErrCodeResourceAlreadyExistsException {
@@ -144,16 +149,17 @@ func (lg *Logger) createIfNotExists() error {
 		}
 	}
 	if lg.retention != 0 {
-		_, err = lg.svc.PutRetentionPolicy(&cloudwatchlogs.PutRetentionPolicyInput{
+		req := lg.svc.PutRetentionPolicyRequest(&cloudwatchlogs.PutRetentionPolicyInput{
 			LogGroupName:    lg.name,
 			RetentionInDays: aws.Int64(int64(lg.retention)),
 		})
+		req.Send(ctx)
 	}
 	return err
 }
 
 type writeError struct {
-	batch  []*cloudwatchlogs.InputLogEvent
+	batch  []cloudwatchlogs.InputLogEvent
 	stream *logStream
 	err    error
 }
@@ -161,8 +167,8 @@ type writeError struct {
 type logStreams struct {
 	logger  *Logger
 	streams []*logStream
-	writers map[*logStream]chan []*cloudwatchlogs.InputLogEvent
-	writes  chan []*cloudwatchlogs.InputLogEvent
+	writers map[*logStream]chan []cloudwatchlogs.InputLogEvent
+	writes  chan []cloudwatchlogs.InputLogEvent
 	errors  chan *writeError
 	wg      sync.WaitGroup
 }
@@ -171,8 +177,8 @@ func newLogStreams(lg *Logger) *logStreams {
 	streams := &logStreams{
 		logger:  lg,
 		streams: []*logStream{},
-		writers: make(map[*logStream]chan []*cloudwatchlogs.InputLogEvent),
-		writes:  make(chan []*cloudwatchlogs.InputLogEvent),
+		writers: make(map[*logStream]chan []cloudwatchlogs.InputLogEvent),
+		writes:  make(chan []cloudwatchlogs.InputLogEvent),
 		errors:  make(chan *writeError),
 	}
 	go streams.coordinator()
@@ -192,13 +198,13 @@ func (ls *logStreams) new() error {
 	}
 
 	ls.streams = append(ls.streams, stream)
-	ls.writers[stream] = make(chan []*cloudwatchlogs.InputLogEvent)
+	ls.writers[stream] = make(chan []cloudwatchlogs.InputLogEvent)
 	go ls.writer(stream)
 
 	return nil
 }
 
-func (ls *logStreams) write(b []*cloudwatchlogs.InputLogEvent) {
+func (ls *logStreams) write(b []cloudwatchlogs.InputLogEvent) {
 	ls.wg.Add(1)
 	go func() {
 		ls.writes <- b
@@ -262,15 +268,16 @@ type logStream struct {
 }
 
 func (ls *logStream) create() error {
-	_, err := ls.logger.svc.CreateLogStream(&cloudwatchlogs.CreateLogStreamInput{
+	req := ls.logger.svc.CreateLogStreamRequest(&cloudwatchlogs.CreateLogStreamInput{
 		LogGroupName:  ls.logger.name,
 		LogStreamName: ls.name,
 	})
+	_, err := req.Send(context.TODO())
 	return err
 }
 
-func (ls *logStream) write(b []*cloudwatchlogs.InputLogEvent) error {
-	req, _ := ls.logger.svc.PutLogEventsRequest(&cloudwatchlogs.PutLogEventsInput{
+func (ls *logStream) write(b []cloudwatchlogs.InputLogEvent) error {
+	req := ls.logger.svc.PutLogEventsRequest(&cloudwatchlogs.PutLogEventsInput{
 		LogGroupName:  ls.logger.name,
 		LogStreamName: ls.name,
 		LogEvents:     b,
