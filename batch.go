@@ -4,7 +4,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/aws/aws-sdk-go/service/cloudwatchlogs"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 )
 
 const (
@@ -14,17 +14,17 @@ const (
 )
 
 type batch struct {
-	logEvents []*cloudwatchlogs.InputLogEvent
+	logEvents []cloudwatchlogs.InputLogEvent
 	size      int
 }
 
 func newBatch() *batch {
 	return &batch{
-		logEvents: []*cloudwatchlogs.InputLogEvent{},
+		logEvents: []cloudwatchlogs.InputLogEvent{},
 	}
 }
 
-func (b *batch) add(logEvent *cloudwatchlogs.InputLogEvent) (ok bool) {
+func (b *batch) add(logEvent cloudwatchlogs.InputLogEvent) (ok bool) {
 	size := len(*logEvent.Message) + logEventOverhead
 	if size+b.size <= maxBatchByteSize && len(b.logEvents) < maxBatchLength {
 		b.logEvents = append(b.logEvents, logEvent)
@@ -47,14 +47,14 @@ func (b *batch) Swap(i, j int) {
 }
 
 type batcher struct {
-	input  chan *cloudwatchlogs.InputLogEvent
-	output chan []*cloudwatchlogs.InputLogEvent
+	input  chan cloudwatchlogs.InputLogEvent
+	output chan []cloudwatchlogs.InputLogEvent
 }
 
 func newBatcher() *batcher {
 	b := &batcher{
-		input:  make(chan *cloudwatchlogs.InputLogEvent),
-		output: make(chan []*cloudwatchlogs.InputLogEvent),
+		input:  make(chan cloudwatchlogs.InputLogEvent),
+		output: make(chan []cloudwatchlogs.InputLogEvent),
 	}
 	go b.worker()
 	return b
