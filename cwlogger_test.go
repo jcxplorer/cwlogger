@@ -32,7 +32,7 @@ func TestCreatesGroupAndStream(t *testing.T) {
 	logGroupCreated := false
 	logStreamCreated := false
 
-	newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
+	_, server := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
 		if action(r) == "CreateLogGroup" {
 			var data CreateLogGroup
 			parseBody(r, &data)
@@ -51,6 +51,8 @@ func TestCreatesGroupAndStream(t *testing.T) {
 		}
 	})
 
+	server.Close()
+
 	assert.True(t, logGroupCreated)
 	assert.True(t, logStreamCreated)
 }
@@ -63,7 +65,7 @@ func TestCreatesRetentionPolicy(t *testing.T) {
 		Retention:    90,
 	}
 
-	newLoggerWithServer(config, func(w http.ResponseWriter, r *http.Request) {
+	_, server := newLoggerWithServer(config, func(w http.ResponseWriter, r *http.Request) {
 		if action(r) == "CreateLogGroup" {
 			logGroupCreated = true
 		}
@@ -79,6 +81,8 @@ func TestCreatesRetentionPolicy(t *testing.T) {
 		}
 	})
 
+	server.Close()
+
 	assert.True(t, logGroupCreated)
 	assert.True(t, retentionPolicyCreated)
 }
@@ -91,7 +95,7 @@ func TestHandlesExistingGroup(t *testing.T) {
 		Retention:    30,
 	}
 
-	newLoggerWithServer(config, func(w http.ResponseWriter, r *http.Request) {
+	_, server := newLoggerWithServer(config, func(w http.ResponseWriter, r *http.Request) {
 		if action(r) == "CreateLogGroup" {
 			w.WriteHeader(http.StatusBadRequest)
 			w.Write([]byte(`
@@ -109,6 +113,8 @@ func TestHandlesExistingGroup(t *testing.T) {
 		}
 	})
 
+	server.Close()
+
 	assert.True(t, logStreamCreated)
 	assert.False(t, retentionPolicyCreated)
 }
@@ -118,7 +124,7 @@ func TestSendsLogsToCloudWatchLogs(t *testing.T) {
 	var logStreamName string
 	var req PutLogEvents
 
-	logger := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
+	logger, server := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
 		if action(r) == "CreateLogStream" {
 			var data CreateLogStream
 			parseBody(r, &data)
@@ -132,6 +138,7 @@ func TestSendsLogsToCloudWatchLogs(t *testing.T) {
 
 	logger.Log(time.Unix(1500000000, 0), "LOG MESSAGE")
 	logger.Close()
+	server.Close()
 
 	assert.Equal(t, "test", req.LogGroupName)
 	assert.Equal(t, logStreamName, req.LogStreamName)
@@ -145,7 +152,7 @@ func TestSequenceToken(t *testing.T) {
 	logChecker := NewLogChecker(1024)
 	receivedSequenceTokens := []*string{}
 
-	logger := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
+	logger, server := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
 		if action(r) == "PutLogEvents" {
 			var data PutLogEvents
 			parseBody(r, &data)
@@ -156,6 +163,7 @@ func TestSequenceToken(t *testing.T) {
 
 	logChecker.Generate(logger, 3000)
 	logger.Close()
+	server.Close()
 
 	assert.Len(t, receivedSequenceTokens, 3)
 	assert.Nil(t, receivedSequenceTokens[0])
@@ -170,7 +178,7 @@ func TestDataAlreadyAcceptedException(t *testing.T) {
 		logChecker            = NewLogChecker(1024)
 	)
 
-	logger := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
+	logger, server := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
 		if action(r) == "PutLogEvents" {
 			calls++
 			if calls == 1 {
@@ -192,6 +200,7 @@ func TestDataAlreadyAcceptedException(t *testing.T) {
 
 	logChecker.Generate(logger, 2000)
 	logger.Close()
+	server.Close()
 
 	assert.Equal(t, 2, calls)
 	assert.Equal(t, "2", receivedSequenceToken)
@@ -203,7 +212,7 @@ func TestInvalidSequenceTokenException(t *testing.T) {
 		receivedSequenceToken string
 	)
 
-	logger := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
+	logger, server := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
 		if action(r) == "PutLogEvents" {
 			calls++
 			if calls == 1 {
@@ -225,6 +234,7 @@ func TestInvalidSequenceTokenException(t *testing.T) {
 
 	logger.Log(time.Now(), "message")
 	logger.Close()
+	server.Close()
 
 	assert.Equal(t, 2, calls)
 	assert.Equal(t, "2", receivedSequenceToken)
@@ -236,7 +246,7 @@ func TestThrottlingException(t *testing.T) {
 	actions := []string{}
 	var calls int
 
-	logger := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
+	logger, server := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
 		actions = append(actions, action(r))
 		if action(r) == "PutLogEvents" {
 			calls++
@@ -254,6 +264,7 @@ func TestThrottlingException(t *testing.T) {
 
 	logChecker.Generate(logger, 1000)
 	logger.Close()
+	server.Close()
 
 	assert.Equal(t,
 		[]string{
@@ -270,7 +281,7 @@ func TestConnectionFailure(t *testing.T) {
 	logChecker := NewLogChecker(1024)
 	var calls int
 
-	logger := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
+	logger, server := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
 		if action(r) == "PutLogEvents" {
 			calls++
 			if calls == 1 {
@@ -288,6 +299,7 @@ func TestConnectionFailure(t *testing.T) {
 
 	logChecker.Generate(logger, 1000)
 	logger.Close()
+	server.Close()
 
 	logChecker.Assert(t)
 }
@@ -298,7 +310,7 @@ func TestLogStreamCreationFailureAfterThrottlingException(t *testing.T) {
 	actions := []string{}
 	var calls int
 
-	logger := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
+	logger, server := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
 		actions = append(actions, action(r))
 		calls++
 		if action(r) == "CreateLogStream" && calls == 4 {
@@ -320,6 +332,7 @@ func TestLogStreamCreationFailureAfterThrottlingException(t *testing.T) {
 
 	logChecker.Generate(logger, 1000)
 	logger.Close()
+	server.Close()
 
 	assert.Equal(t,
 		[]string{
@@ -335,7 +348,7 @@ func TestInvalidJSONResponses(t *testing.T) {
 	logChecker := NewLogChecker(1024)
 	var calls int
 
-	logger := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
+	logger, server := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
 		if action(r) == "PutLogEvents" {
 			calls++
 			if calls == 1 {
@@ -355,6 +368,7 @@ func TestInvalidJSONResponses(t *testing.T) {
 
 	logChecker.Generate(logger, 1000)
 	logger.Close()
+	server.Close()
 
 	logChecker.Assert(t)
 }
@@ -363,7 +377,7 @@ func TestBatchByteSizeLimit(t *testing.T) {
 	stg := new(SequenceTokenGenerator)
 	logChecker := NewLogChecker(1024)
 
-	logger := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
+	logger, server := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
 		if action(r) == "PutLogEvents" {
 			var data PutLogEvents
 			parseBody(r, &data)
@@ -375,6 +389,7 @@ func TestBatchByteSizeLimit(t *testing.T) {
 
 	logChecker.Generate(logger, 3072)
 	logger.Close()
+	server.Close()
 
 	logChecker.Assert(t)
 }
@@ -383,7 +398,7 @@ func TestBatchLengthLimit(t *testing.T) {
 	stg := new(SequenceTokenGenerator)
 	logChecker := NewLogChecker(55)
 
-	logger := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
+	logger, server := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
 		if action(r) == "PutLogEvents" {
 			var data PutLogEvents
 			parseBody(r, &data)
@@ -395,6 +410,7 @@ func TestBatchLengthLimit(t *testing.T) {
 
 	logChecker.Generate(logger, 30000)
 	logger.Close()
+	server.Close()
 
 	logChecker.Assert(t)
 }
@@ -404,7 +420,7 @@ func TestBatchSendsDataAfterTimeout(t *testing.T) {
 	logChecker := NewLogChecker(1024)
 	var wg sync.WaitGroup
 
-	logger := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
+	logger, server := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
 		if action(r) == "PutLogEvents" {
 			var data PutLogEvents
 			parseBody(r, &data)
@@ -418,11 +434,13 @@ func TestBatchSendsDataAfterTimeout(t *testing.T) {
 	logChecker.Generate(logger, 2000)
 	wg.Wait()
 
+	server.Close()
+
 	logChecker.Assert(t)
 }
 
 func TestLogGroupCreationFails(t *testing.T) {
-	client := newClientWithServer(func(w http.ResponseWriter, r *http.Request) {
+	client, server := newClientWithServer(func(w http.ResponseWriter, r *http.Request) {
 		if action(r) == "CreateLogGroup" {
 			w.WriteHeader(http.StatusInternalServerError)
 			w.Write([]byte(`{"__type": "ServiceUnavailableException"}`))
@@ -432,12 +450,15 @@ func TestLogGroupCreationFails(t *testing.T) {
 		Client:       client,
 		LogGroupName: "test",
 	})
+
+	server.Close()
+
 	assert.Error(t, err)
 	assert.Nil(t, logger)
 }
 
 func TestLogStreamCreationFails(t *testing.T) {
-	client := newClientWithServer(func(w http.ResponseWriter, r *http.Request) {
+	client, server := newClientWithServer(func(w http.ResponseWriter, r *http.Request) {
 		if action(r) == "CreateLogStream" {
 			w.WriteHeader(http.StatusInternalServerError)
 			w.Write([]byte(`{"__type": "ServiceUnavailableException"}`))
@@ -447,12 +468,15 @@ func TestLogStreamCreationFails(t *testing.T) {
 		Client:       client,
 		LogGroupName: "test",
 	})
+
+	server.Close()
+
 	assert.Error(t, err)
 	assert.Nil(t, logger)
 }
 
 func TestPutRetentionPolicyFails(t *testing.T) {
-	client := newClientWithServer(func(w http.ResponseWriter, r *http.Request) {
+	client, server := newClientWithServer(func(w http.ResponseWriter, r *http.Request) {
 		if action(r) == "PutRetentionPolicy" {
 			w.WriteHeader(http.StatusInternalServerError)
 			w.Write([]byte(`{"__type": "ServiceUnavailableException"}`))
@@ -463,6 +487,9 @@ func TestPutRetentionPolicyFails(t *testing.T) {
 		LogGroupName: "test",
 		Retention:    180,
 	})
+
+	server.Close()
+
 	assert.Error(t, err)
 	assert.Nil(t, logger)
 }
@@ -470,7 +497,7 @@ func TestPutRetentionPolicyFails(t *testing.T) {
 func TestIgnoresBatchItCannotRetry(t *testing.T) {
 	var calls int
 
-	logger := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
+	logger, server := newLoggerWithServer(defaultConfig, func(w http.ResponseWriter, r *http.Request) {
 		if action(r) == "PutLogEvents" {
 			calls++
 			w.WriteHeader(http.StatusBadRequest)
@@ -480,6 +507,7 @@ func TestIgnoresBatchItCannotRetry(t *testing.T) {
 
 	logger.Log(time.Now(), "message")
 	logger.Close()
+	server.Close()
 
 	assert.Equal(t, 1, calls)
 }
@@ -495,7 +523,7 @@ func TestCustomErrorReporter(t *testing.T) {
 		},
 	}
 
-	logger := newLoggerWithServer(config, func(w http.ResponseWriter, r *http.Request) {
+	logger, server := newLoggerWithServer(config, func(w http.ResponseWriter, r *http.Request) {
 		if action(r) == "PutLogEvents" {
 			calls++
 			w.WriteHeader(http.StatusBadRequest)
@@ -514,6 +542,7 @@ func TestCustomErrorReporter(t *testing.T) {
 
 	logChecker.Generate(logger, 2000)
 	logger.Close()
+	server.Close()
 
 	assert.Equal(t, "ResourceNotFoundException", errorMessages[0])
 	assert.Equal(t, "UnknownError: unknown", errorMessages[1])
@@ -561,32 +590,36 @@ type LogEvent struct {
 	Message   string `json:"message"`
 }
 
-func newClientWithServer(handler http.HandlerFunc) *cloudwatchlogs.Client {
+func newClientWithServer(handler http.HandlerFunc) (*cloudwatchlogs.Client, *httptest.Server) {
 	server := httptest.NewServer(http.HandlerFunc(handler))
 
 	cfg := aws.NewConfig()
-	cfg.Logger = aws.NewDefaultLogger()
-	cfg.LogLevel = aws.LogDebug
+	// cfg.Logger = aws.NewDefaultLogger()
+	// cfg.LogLevel = aws.LogDebug
 	cfg.Region = endpoints.UsEast1RegionID
+	cfg.HTTPClient = http.DefaultClient
 	cfg.DisableEndpointHostPrefix = true
 	cfg.EndpointResolver = aws.ResolveWithEndpointURL(server.URL)
 	cfg.Retryer = aws.DefaultRetryer{NumMaxRetries: 0}
 	cfg.Credentials = aws.NewStaticCredentialsProvider("id", "secret", "token")
-
-	return cloudwatchlogs.New(*cfg)
+	cfg.Handlers.Send.PushBack(func(req *aws.Request) {
+		responseRecorder := httptest.NewRecorder()
+		handler(responseRecorder, req.HTTPRequest)
+		req.HTTPResponse = responseRecorder.Result()
+	})
+	return cloudwatchlogs.New(*cfg), server
 }
 
-func newLoggerWithServer(config *Config, handler http.HandlerFunc) *Logger {
+func newLoggerWithServer(config *Config, handler http.HandlerFunc) (*Logger, *httptest.Server) {
 	cfg := new(Config)
 	*cfg = *config
-	if cfg.Client == nil {
-		cfg.Client = newClientWithServer(handler)
-	}
+	client, server := newClientWithServer(handler)
+	cfg.Client = client
 	logGroup, err := New(cfg)
 	if err != nil {
 		panic(err)
 	}
-	return logGroup
+	return logGroup, server
 }
 
 func action(r *http.Request) string {
