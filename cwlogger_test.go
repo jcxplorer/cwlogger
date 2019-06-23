@@ -449,8 +449,6 @@ func TestLogStreamCreationFails(t *testing.T) {
 		LogGroupName: "test",
 	})
 
-	// server.Close()
-
 	assert.Error(t, err)
 	assert.Nil(t, logger)
 }
