@@ -19,6 +19,7 @@ import (
 	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/endpoints"
 	"github.com/aws/aws-sdk-go-v2/aws/external"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	"github.com/stretchr/testify/assert"
@@ -567,6 +568,7 @@ type LogEvent struct {
 func newClientWithServer(handler http.HandlerFunc) *cloudwatchlogs.Client {
 	server := httptest.NewServer(http.HandlerFunc(handler))
 	cfg, _ := external.LoadDefaultAWSConfig()
+	cfg.Region = endpoints.UsEast1RegionID
 	cfg.EndpointResolver = aws.ResolveWithEndpointURL(server.URL)
 	cfg.Retryer = aws.DefaultRetryer{NumMaxRetries: 0}
 	cfg.Credentials = aws.NewStaticCredentialsProvider("id", "secret", "token")
