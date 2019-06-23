@@ -153,7 +153,7 @@ func (lg *Logger) createIfNotExists() error {
 			LogGroupName:    lg.name,
 			RetentionInDays: aws.Int64(int64(lg.retention)),
 		})
-		req.Send(ctx)
+		_, err = req.Send(ctx)
 	}
 	return err
 }
