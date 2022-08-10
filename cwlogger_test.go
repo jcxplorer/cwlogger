@@ -1,6 +1,7 @@
 package cwlogger
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -19,8 +20,9 @@ import (
 	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/aws/endpoints"
-	"github.com/aws/aws-sdk-go-v2/aws/external"
+	"github.com/aws/aws-sdk-go-v2/aws/retry"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	"github.com/stretchr/testify/assert"
 )
@@ -533,7 +535,7 @@ func TestConfigWithoutClient(t *testing.T) {
 
 func TestConfigWithoutLogGroupName(t *testing.T) {
 	logger, err := New(&Config{
-		Client: cloudwatchlogs.New(*aws.NewConfig()),
+		Client: cloudwatchlogs.NewFromConfig(*aws.NewConfig()),
 	})
 	assert.Nil(t, logger)
 	assert.EqualError(t, err, "cwlogger: config missing required LogGroupName")
@@ -567,12 +569,23 @@ type LogEvent struct {
 
 func newClientWithServer(handler http.HandlerFunc) *cloudwatchlogs.Client {
 	server := httptest.NewServer(http.HandlerFunc(handler))
-	cfg, _ := external.LoadDefaultAWSConfig()
-	cfg.Region = endpoints.UsEast1RegionID
-	cfg.EndpointResolver = aws.ResolveWithEndpointURL(server.URL)
-	cfg.Retryer = aws.DefaultRetryer{NumMaxRetries: 0}
-	cfg.Credentials = aws.NewStaticCredentialsProvider("id", "secret", "token")
-	return cloudwatchlogs.New(cfg)
+	cfg, _ := config.LoadDefaultConfig(context.TODO())
+	cfg.Region = "us-east-1"
+
+	testServerResolver := aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
+		return aws.Endpoint{
+			URL: server.URL,
+		}, nil
+	})
+
+	cfg.EndpointResolverWithOptions = testServerResolver
+	cfg.Retryer = func() aws.Retryer {
+		return retry.NewStandard(func(so *retry.StandardOptions) {
+			so.MaxAttempts = 1
+		})
+	}
+	cfg.Credentials = credentials.NewStaticCredentialsProvider("id", "secret", "token")
+	return cloudwatchlogs.NewFromConfig(cfg)
 }
 
 func newLoggerWithServer(config *Config, handler http.HandlerFunc) *Logger {
