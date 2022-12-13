@@ -1,6 +1,7 @@
 package cwlogger
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -18,10 +19,11 @@ import (
 
 	"sync"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/cloudwatchlogs"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/retry"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -433,6 +435,7 @@ func TestLogGroupCreationFails(t *testing.T) {
 		Client:       client,
 		LogGroupName: "test",
 	})
+
 	assert.Error(t, err)
 	assert.Nil(t, logger)
 }
@@ -448,6 +451,7 @@ func TestLogStreamCreationFails(t *testing.T) {
 		Client:       client,
 		LogGroupName: "test",
 	})
+
 	assert.Error(t, err)
 	assert.Nil(t, logger)
 }
@@ -464,6 +468,7 @@ func TestPutRetentionPolicyFails(t *testing.T) {
 		LogGroupName: "test",
 		Retention:    180,
 	})
+
 	assert.Error(t, err)
 	assert.Nil(t, logger)
 }
@@ -530,7 +535,7 @@ func TestConfigWithoutClient(t *testing.T) {
 
 func TestConfigWithoutLogGroupName(t *testing.T) {
 	logger, err := New(&Config{
-		Client: cloudwatchlogs.New(session.New()),
+		Client: cloudwatchlogs.NewFromConfig(*aws.NewConfig()),
 	})
 	assert.Nil(t, logger)
 	assert.EqualError(t, err, "cwlogger: config missing required LogGroupName")
@@ -562,15 +567,25 @@ type LogEvent struct {
 	Message   string `json:"message"`
 }
 
-func newClientWithServer(handler http.HandlerFunc) *cloudwatchlogs.CloudWatchLogs {
+func newClientWithServer(handler http.HandlerFunc) *cloudwatchlogs.Client {
 	server := httptest.NewServer(http.HandlerFunc(handler))
-	session := session.New()
-	config := aws.NewConfig().
-		WithMaxRetries(0).
-		WithEndpoint(server.URL).
-		WithRegion("us-east-1").
-		WithCredentials(credentials.NewStaticCredentials("id", "secret", "token"))
-	return cloudwatchlogs.New(session, config)
+	cfg, _ := config.LoadDefaultConfig(context.TODO())
+	cfg.Region = "us-east-1"
+
+	testServerResolver := aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
+		return aws.Endpoint{
+			URL: server.URL,
+		}, nil
+	})
+
+	cfg.EndpointResolverWithOptions = testServerResolver
+	cfg.Retryer = func() aws.Retryer {
+		return retry.NewStandard(func(so *retry.StandardOptions) {
+			so.MaxAttempts = 1
+		})
+	}
+	cfg.Credentials = credentials.NewStaticCredentialsProvider("id", "secret", "token")
+	return cloudwatchlogs.NewFromConfig(cfg)
 }
 
 func newLoggerWithServer(config *Config, handler http.HandlerFunc) *Logger {
